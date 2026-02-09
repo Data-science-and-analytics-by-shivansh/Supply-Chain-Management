@@ -1,0 +1,20 @@
+-- Power BI Measures
+
+Total LPI Score = AVERAGE(SupplyChainLPI[LPI_Score])
+
+On-Time Delivery Rate = 
+DIVIDE(
+    COUNTROWS(FILTER(SupplyChainLPI, SupplyChainLPI[Timeliness] > 3.5)),
+    COUNTROWS(SupplyChainLPI)
+) * 100
+
+Customs Efficiency = AVERAGE(SupplyChainLPI[Customs])
+
+Infrastructure Bottlenecks = CALCULATE(AVERAGE(SupplyChainLPI[Infrastructure]), SupplyChainLPI[Infrastructure] < 3.0)
+
+What-If Optimized Cost = 
+VAR CostFactor = [WhatIf Cost Multiplier]  // From What-If Parameter
+RETURN
+    SUMX(SupplyChainLPI, SupplyChainLPI[International_Shipments] * CostFactor)
+
+-- Create What-If Parameter: Modeling > What-If > New Parameter (Name: WhatIf Cost Multiplier, Min 0.5, Max 2, Increment 0.1, Default 1)
