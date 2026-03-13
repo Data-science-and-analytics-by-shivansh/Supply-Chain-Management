@@ -1,0 +1,70 @@
+name: Supply Chain CI/CD
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    name: Test Suite
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        python-version: ['3.8', '3.9', '3.10', '3.11']
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+    
+    - name: Cache dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+    
+    - name: Install dependencies
+      run: |
+        pip install -r requirements.txt
+        pip install pytest pytest-cov pytest-xdist flake8 black
+    
+    - name: Lint
+      run: flake8 supply_chain_intelligence.py --max-line-length=120
+    
+    - name: Format check
+      run: black --check supply_chain_intelligence.py || true
+    
+    - name: Run tests
+      run: pytest tests/ -n auto -v --cov=supply_chain_intelligence --cov-report=xml
+    
+    - name: Upload coverage
+      uses: codecov/codecov-action@v3
+      with:
+        file: ./coverage.xml
+
+  build-docker:
+    name: Build Docker
+    runs-on: ubuntu-latest
+    needs: test
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Build image
+      run: docker build -t supply-chain:latest .
+    
+    - name: Test image
+      run: docker run --rm supply-chain:latest python -c "import supply_chain_intelligence; print('OK')"
+    
+    - name: Push to Docker Hub
+      if: github.ref == 'refs/heads/main'
+      run: |
+        echo ${{ secrets.DOCKER_PASSWORD }} | docker login -u ${{ secrets.DOCKER_USERNAME }} --password-stdin
+        docker tag supply-chain:latest ${{ secrets.DOCKER_USERNAME }}/supply-chain:latest
+        docker push ${{ secrets.DOCKER_USERNAME }}/supply-chain:latest
