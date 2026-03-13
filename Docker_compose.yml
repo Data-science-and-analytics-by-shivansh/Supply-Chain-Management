@@ -1,0 +1,215 @@
+version: '3.8'
+
+services:
+  # Supply Chain Intelligence API
+  supply-chain-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: supply-chain-api
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./data:/app/data
+      - ./models:/app/models
+      - ./logs:/app/logs
+      - ./powerbi_export:/app/powerbi_export
+      - ./output:/app/output
+    environment:
+      - MODEL_PATH=/app/models
+      - DATA_PATH=/app/data
+      - LOG_LEVEL=INFO
+      - OTDR_TARGET=0.95
+      - MAX_ACCEPTABLE_DELAY=3
+      - CONTAMINATION=0.05
+    restart: unless-stopped
+    networks:
+      - supply-chain-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import supply_chain_intelligence; print('OK')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    depends_on:
+      - postgres
+      - redis
+
+  # PostgreSQL for supply chain data
+  postgres:
+    image: postgres:14-alpine
+    container_name: supply-chain-postgres
+    environment:
+      POSTGRES_DB: supply_chain_db
+      POSTGRES_USER: sc_user
+      POSTGRES_PASSWORD: sc_secure_pass_456
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - supply-chain-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sc_user"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis for caching predictions
+  redis:
+    image: redis:7-alpine
+    container_name: supply-chain-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - supply-chain-network
+    restart: unless-stopped
+    command: redis-server --appendonly yes --requirepass redis_sc_pass
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Model Retraining Service (scheduled)
+  model-trainer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: supply-chain-trainer
+    volumes:
+      - ./data:/app/data
+      - ./models:/app/models
+      - ./logs:/app/logs
+    environment:
+      - MODEL_PATH=/app/models
+      - DATA_PATH=/app/data
+      - TRAINING_SCHEDULE=weekly
+      - RETRAIN_THRESHOLD_MAE=5.0
+    networks:
+      - supply-chain-network
+    command: python -c "from supply_chain_intelligence import retrain_models; retrain_models()"
+    restart: "no"
+    profiles:
+      - training
+
+  # Power BI Gateway (for data sync)
+  powerbi-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: supply-chain-powerbi
+    volumes:
+      - ./powerbi_export:/app/powerbi_export
+      - ./data:/app/data
+      - ./models:/app/models
+    environment:
+      - POWERBI_EXPORT_PATH=/app/powerbi_export
+      - EXPORT_SCHEDULE=daily
+    networks:
+      - supply-chain-network
+    command: python -c "from supply_chain_intelligence import export_for_powerbi; export_for_powerbi()"
+    restart: "no"
+    profiles:
+      - powerbi
+
+  # Jupyter Notebook for analysis
+  jupyter:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: supply-chain-jupyter
+    ports:
+      - "8888:8888"
+    volumes:
+      - ./notebooks:/app/notebooks
+      - ./data:/app/data
+      - ./models:/app/models
+      - ./powerbi_export:/app/powerbi_export
+    environment:
+      - JUPYTER_ENABLE_LAB=yes
+    command: >
+      jupyter lab
+      --ip=0.0.0.0
+      --port=8888
+      --no-browser
+      --allow-root
+      --NotebookApp.token=''
+      --NotebookApp.password=''
+    networks:
+      - supply-chain-network
+    restart: unless-stopped
+    profiles:
+      - dev
+
+  # Grafana for monitoring dashboards
+  grafana:
+    image: grafana/grafana:latest
+    container_name: supply-chain-grafana
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ./grafana/datasources:/etc/grafana/provisioning/datasources
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_INSTALL_PLUGINS=grafana-clock-panel,grafana-simple-json-datasource
+    networks:
+      - supply-chain-network
+    restart: unless-stopped
+    profiles:
+      - monitoring
+
+  # Prometheus for metrics
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: supply-chain-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+    networks:
+      - supply-chain-network
+    restart: unless-stopped
+    profiles:
+      - monitoring
+
+  # TimescaleDB for time-series data (optional)
+  timescaledb:
+    image: timescale/timescaledb:latest-pg14
+    container_name: supply-chain-timescale
+    environment:
+      POSTGRES_DB: supply_chain_ts
+      POSTGRES_USER: ts_user
+      POSTGRES_PASSWORD: ts_pass_789
+    ports:
+      - "5433:5432"
+    volumes:
+      - timescale-data:/var/lib/postgresql/data
+    networks:
+      - supply-chain-network
+    restart: unless-stopped
+    profiles:
+      - timeseries
+
+networks:
+  supply-chain-network:
+    driver: bridge
+
+volumes:
+  postgres-data:
+  redis-data:
+  grafana-data:
+  prometheus-data:
+  timescale-data:
